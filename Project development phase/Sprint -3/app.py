@@ -5,12 +5,15 @@ import ibm_db
 from passlib.hash import sha256_crypt
 from functools import wraps
 import win32api
+
+from sendgrid import *
+
 #creating an app instance
 app = Flask(__name__)
 
 
 
-conn=ibm_db.connect("DATABASE=bludb;HOSTNAME=55fbc997-9266-4331-afd3-888b05e734c0.bs2io90l08kqb1od8lcg.databases.appdomain.cloud;PORT=31929;SECURITY=SSL;SSLServerCertificate=DigiCertGlobalRootCA.crt;UID=;PWD=;",'','')
+conn=ibm_db.connect("DATABASE=bludb;HOSTNAME=;PORT=;SECURITY=SSL;SSLServerCertificate=DigiCertGlobalRootCA.crt;UID=;PWD=;",'','')
 
 #Index
 @app.route('/')
@@ -327,9 +330,10 @@ def edit_location(id):
     location=ibm_db.fetch_assoc(stmt2)
     #Get form
     form = LocationForm(request.form)
+    print(location)
 
     #populate article form fields
-    form.location_id.data = location['location_id']
+    form.location_id.data = location['LOCATION_ID']
 
     if request.method == 'POST' and form.validate():
         location_id = request.form['location_id']
@@ -339,7 +343,6 @@ def edit_location(id):
         ibm_db.bind_param(stmt2,1,location_id)
         ibm_db.bind_param(stmt2,2,id)
         ibm_db.execute(stmt2)
-        ibm_db.fetch_assoc(stmt2)
 
         flash("Location Updated", "success")
 
@@ -408,40 +411,101 @@ def add_product_movements():
         locs.append(list(i.values())[0])
 
     form.from_location.choices = [(l,l) for l in locs]
-    form.from_location.choices.append(("--","--"))
+    form.from_location.choices.append(("Main Inventory","Main Inventory"))
     form.to_location.choices = [(l,l) for l in locs]
-    form.to_location.choices.append(("--","--"))
+    form.to_location.choices.append(("Main Inventory","Main Inventory"))
     form.product_id.choices = [(p,p) for p in prods]
+
     if request.method == 'POST' and form.validate():
         from_location = form.from_location.data
         to_location = form.to_location.data
         product_id = form.product_id.data
         qty = form.qty.data
 
-        sql2="INSERT into productmovements(from_location, to_location, product_id, qty) VALUES(?, ?, ?, ?)"
-        stmt2 = ibm_db.prepare(conn, sql2)    
-        ibm_db.bind_param(stmt2,1,from_location)
-        ibm_db.bind_param(stmt2,2,to_location)
-        ibm_db.bind_param(stmt2,3,product_id)
-        ibm_db.bind_param(stmt2,4,qty)
-        ibm_db.execute(stmt2)
 
         if from_location==to_location:
-            #flash("Please Select different from and to locations", "failure")
-            raise CustomError("Please Give different From and To Locations")
-        elif from_location == "--":
+            raise CustomError("Please Give different From and To Locations!!")
 
+
+        elif from_location=="Main Inventory":
             sql2="SELECT * from product_balance where location_id=? and product_id=?"
             stmt2 = ibm_db.prepare(conn, sql2)    
             ibm_db.bind_param(stmt2,1,to_location)
             ibm_db.bind_param(stmt2,2,product_id)
+            result=ibm_db.execute(stmt2)
+            result=ibm_db.fetch_assoc(stmt2)
+            print("-----------------")
+            print(result)
+            print("-----------------")
+            app.logger.info(result)
+            if result!=False:
+                if(len(result))>0:
+                    Quantity = result["QTY"]
+                    q = Quantity + qty 
+
+                    sql2="UPDATE product_balance set qty=? where location_id=? and product_id=?"
+                    stmt2 = ibm_db.prepare(conn, sql2)    
+                    ibm_db.bind_param(stmt2,1,q)
+                    ibm_db.bind_param(stmt2,2,to_location)
+                    ibm_db.bind_param(stmt2,3,product_id)
+                    ibm_db.execute(stmt2)
+
+                    sql2="INSERT into productmovements(from_location, to_location, product_id, qty) VALUES(?, ?, ?, ?)"
+                    stmt2 = ibm_db.prepare(conn, sql2)    
+                    ibm_db.bind_param(stmt2,1,from_location)
+                    ibm_db.bind_param(stmt2,2,to_location)
+                    ibm_db.bind_param(stmt2,3,product_id)
+                    ibm_db.bind_param(stmt2,4,qty)
+                    ibm_db.execute(stmt2)
+            else:   
+
+                sql2="INSERT into product_balance(product_id, location_id, qty) values(?, ?, ?)"
+                stmt2 = ibm_db.prepare(conn, sql2)    
+                ibm_db.bind_param(stmt2,1,product_id)
+                ibm_db.bind_param(stmt2,2,to_location)
+                ibm_db.bind_param(stmt2,3,qty)
+                ibm_db.execute(stmt2)
+
+                sql2="INSERT into productmovements(from_location, to_location, product_id, qty) VALUES(?, ?, ?, ?)"
+                stmt2 = ibm_db.prepare(conn, sql2)    
+                ibm_db.bind_param(stmt2,1,from_location)
+                ibm_db.bind_param(stmt2,2,to_location)
+                ibm_db.bind_param(stmt2,3,product_id)
+                ibm_db.bind_param(stmt2,4,qty)
+                ibm_db.execute(stmt2)
+            
+
+
+            sql = "select product_num from products where product_id=?"
+            stmt = ibm_db.prepare(conn, sql)
+            ibm_db.bind_param(stmt,1,product_id)
+            current_num=ibm_db.execute(stmt)
+            current_num = ibm_db.fetch_assoc(stmt)        
+
+            sql2="Update products set product_num=? where product_id=?"
+            stmt2 = ibm_db.prepare(conn, sql2)    
+            ibm_db.bind_param(stmt2,1,current_num['PRODUCT_NUM']-qty)
+            ibm_db.bind_param(stmt2,2,product_id)
             ibm_db.execute(stmt2)
 
+            alert_num=current_num['PRODUCT_NUM']-qty
+
+            if(alert_num<=0):
+                alert("Please update the quantity of the product {}, Atleast {} number of pieces must be added to finish the pending Product Movements!".format(product_id,-alert_num))
+        
+        elif to_location=="Main Inventory":
+            sql2="SELECT * from product_balance where location_id=? and product_id=?"
+            stmt2 = ibm_db.prepare(conn, sql2)    
+            ibm_db.bind_param(stmt2,1,from_location)
+            ibm_db.bind_param(stmt2,2,product_id)
+            result=ibm_db.execute(stmt2)
+            result=ibm_db.fetch_assoc(stmt2)
+
             app.logger.info(result)
-            if result!=None:
+            if result!=False:
                 if(len(result))>0:
-                    Quantity = result["qty"]
-                    q = Quantity + qty 
+                    Quantity = result["QTY"]
+                    q = Quantity - qty 
 
                     sql2="UPDATE product_balance set qty=? where location_id=? and product_id=?"
                     stmt2 = ibm_db.prepare(conn, sql2)    
@@ -449,85 +513,50 @@ def add_product_movements():
                     ibm_db.bind_param(stmt2,2,to_location)
                     ibm_db.bind_param(stmt2,3,product_id)
                     ibm_db.execute(stmt2)
-            else:
 
-                sql2="INSERT into product_balance(product_id, location_id, qty) values(?, ?, ?)"
-                stmt2 = ibm_db.prepare(conn, sql2)    
-                ibm_db.bind_param(stmt2,1,product_id)
-                ibm_db.bind_param(stmt2,2,to_location)
-                ibm_db.bind_param(stmt2,3,qty)
-                ibm_db.execute(stmt2)
-        elif to_location == "--":
-
-            sql = "SELECT * from product_balance where location_id=? and product_id=?"
-            stmt = ibm_db.prepare(conn, sql)
-            ibm_db.bind_param(stmt2,1,from_location)
-            ibm_db.bind_param(stmt2,2,product_id)
-            result=ibm_db.execute(stmt)
-            result = ibm_db.fetch_assoc(stmt)
-
-            app.logger.info(result)
-            if result!=None:
-                if(len(result))>0:
-                    Quantity = result["qty"]
-                    q = Quantity - qty 
-
-                    sql2="UPDATE product_balance set qty=? where location_id=? and product_id=?"
+                    sql2="INSERT into productmovements(from_location, to_location, product_id, qty) VALUES(?, ?, ?, ?)"
                     stmt2 = ibm_db.prepare(conn, sql2)    
-                    ibm_db.bind_param(stmt2,1,q)
-                    ibm_db.bind_param(stmt2,2,from_location)
+                    ibm_db.bind_param(stmt2,1,from_location)
+                    ibm_db.bind_param(stmt2,2,to_location)
                     ibm_db.bind_param(stmt2,3,product_id)
+                    ibm_db.bind_param(stmt2,4,qty)
                     ibm_db.execute(stmt2)
 
-            else:
+                    flash("Product Movement Added", "success")
 
-                sql2="INSERT into product_balance(product_id, location_id, qty) values(?, ?, ?)"
-                stmt2 = ibm_db.prepare(conn, sql2)    
-                ibm_db.bind_param(stmt2,1,product_id)
-                ibm_db.bind_param(stmt2,2,from_location)
-                ibm_db.bind_param(stmt2,3,qty)
-                ibm_db.execute(stmt2)
+
+                    sql = "select product_num from products where product_id=?"
+                    stmt = ibm_db.prepare(conn, sql)
+                    ibm_db.bind_param(stmt,1,product_id)
+                    current_num=ibm_db.execute(stmt)
+                    current_num = ibm_db.fetch_assoc(stmt)        
+
+                    sql2="Update products set product_num=? where product_id=?"
+                    stmt2 = ibm_db.prepare(conn, sql2)    
+                    ibm_db.bind_param(stmt2,1,current_num['PRODUCT_NUM']+qty)
+                    ibm_db.bind_param(stmt2,2,product_id)
+                    ibm_db.execute(stmt2)
+
+                    alert_num=q
+                    if(alert_num<=0):
+                        alert("Please Add {} number of {} to {} warehouse!".format(-q,product_id,from_location))
+            else:
+                raise CustomError("There is no product named {} in {}.".format(product_id,from_location))
+            
+
 
         else: #will be executed if both from_location and to_location are specified
-
+            f=0
             sql = "SELECT * from product_balance where location_id=? and product_id=?"
             stmt = ibm_db.prepare(conn, sql)
-            ibm_db.bind_param(stmt2,1,to_location)
-            ibm_db.bind_param(stmt2,2,product_id)
+            ibm_db.bind_param(stmt,1,from_location)
+            ibm_db.bind_param(stmt,2,product_id)
             result=ibm_db.execute(stmt)
             result = ibm_db.fetch_assoc(stmt)
 
-            if result!=None:
+            if result!=False:
                 if(len(result))>0:
-                    Quantity = result["qty"]
-                    q = Quantity + qty 
-
-                    sql2="UPDATE product_balance set qty=? where location_id=? and product_id=?"
-                    stmt2 = ibm_db.prepare(conn, sql2)    
-                    ibm_db.bind_param(stmt2,1,q)
-                    ibm_db.bind_param(stmt2,2,to_location)
-                    ibm_db.bind_param(stmt2,3,product_id)
-                    ibm_db.execute(stmt2)
-
-            else:
-            
-                sql2="INSERT into product_balance(product_id, location_id, qty) values(?, ?, ?)"
-                stmt2 = ibm_db.prepare(conn, sql2)    
-                ibm_db.bind_param(stmt2,1,product_id)
-                ibm_db.bind_param(stmt2,2,to_location)
-                ibm_db.bind_param(stmt2,3,qty)
-                ibm_db.execute(stmt2)
-
-            sql = "SELECT * from product_balance where location_id=? and product_id=?"
-            stmt = ibm_db.prepare(conn, sql)
-            ibm_db.bind_param(stmt2,1,from_location)
-            ibm_db.bind_param(stmt2,2,product_id)
-            result=ibm_db.execute(stmt)
-            result = ibm_db.fetch_assoc(stmt)
-
-            if result!=None:
-                if(len(result))>0:
-                    Quantity = result["qty"]
+                    Quantity = result["QTY"]
                     q = Quantity - qty 
 
                     sql2="UPDATE product_balance set qty=? where location_id=? and product_id=?"
@@ -536,232 +565,59 @@ def add_product_movements():
                     ibm_db.bind_param(stmt2,2,from_location)
                     ibm_db.bind_param(stmt2,3,product_id)
                     ibm_db.execute(stmt2)
+                    f=1
+
+                    alert_num=q
+                    if(alert_num<=0):
+                        alert("Please Add {} number of {} to {} warehouse!".format(-q,product_id,from_location))
 
             else:
-        
-                sql2="INSERT into product_balance(product_id, location_id, qty) values(?, ?, ?)"
+                raise CustomError("There is no product named {} in {}.".format(product_id,from_location))
+
+            if(f==1):
+                sql = "SELECT * from product_balance where location_id=? and product_id=?"
+                stmt = ibm_db.prepare(conn, sql)
+                ibm_db.bind_param(stmt,1,to_location)
+                ibm_db.bind_param(stmt,2,product_id)
+                result=ibm_db.execute(stmt)
+                result = ibm_db.fetch_assoc(stmt)
+
+                if result!=False:
+                    if(len(result))>0:
+                        Quantity = result["QTY"]
+                        q = Quantity + qty 
+
+                        sql2="UPDATE product_balance set qty=? where location_id=? and product_id=?"
+                        stmt2 = ibm_db.prepare(conn, sql2)    
+                        ibm_db.bind_param(stmt2,1,q)
+                        ibm_db.bind_param(stmt2,2,to_location)
+                        ibm_db.bind_param(stmt2,3,product_id)
+                        ibm_db.execute(stmt2)
+
+                else:
+            
+                    sql2="INSERT into product_balance(product_id, location_id, qty) values(?, ?, ?)"
+                    stmt2 = ibm_db.prepare(conn, sql2)    
+                    ibm_db.bind_param(stmt2,1,product_id)
+                    ibm_db.bind_param(stmt2,2,to_location)
+                    ibm_db.bind_param(stmt2,3,qty)
+                    ibm_db.execute(stmt2)
+                sql2="INSERT into productmovements(from_location, to_location, product_id, qty) VALUES(?, ?, ?, ?)"
                 stmt2 = ibm_db.prepare(conn, sql2)    
-                ibm_db.bind_param(stmt2,1,product_id)
-                ibm_db.bind_param(stmt2,2,from_location)
-                ibm_db.bind_param(stmt2,3,qty)
+                ibm_db.bind_param(stmt2,1,from_location)
+                ibm_db.bind_param(stmt2,2,to_location)
+                ibm_db.bind_param(stmt2,3,product_id)
+                ibm_db.bind_param(stmt2,4,qty)
                 ibm_db.execute(stmt2)
 
-        #updating
-        print(product_id)
-
-        sql = "select product_num from products where product_id=?"
-        stmt = ibm_db.prepare(conn, sql)
-        ibm_db.bind_param(stmt2,1,product_id)
-        current_num=ibm_db.execute(stmt)
-        current_num = ibm_db.fetch_assoc(stmt)        
-
-        sql2="Update products set product_num=? where product_id=?"
-        stmt2 = ibm_db.prepare(conn, sql2)    
-        ibm_db.bind_param(stmt2,1,current_num['PRODUCT_NUM']-qty)
-        ibm_db.bind_param(stmt2,2,product_id)
-        ibm_db.execute(stmt2)
+                flash("Product Movement Added", "success")
 
         render_template('products.html',form=form)
 
-        flash("Product Movement Added", "success")
 
         return redirect(url_for('product_movements'))
 
     return render_template('add_product_movements.html', form=form)
-
-#Edit Product Movement
-@app.route('/edit_product_movement/<string:id>', methods=['GET', 'POST'])
-@is_logged_in
-def edit_product_movements(id):
-    form = ProductMovementForm(request.form) 
-
-    sql2="SELECT product_id FROM products"
-    sql3="SELECT location_id FROM locations"
-    stmt2 = ibm_db.prepare(conn, sql2)
-    stmt3 = ibm_db.prepare(conn, sql3)
-
-    result=ibm_db.execute(stmt2)
-    ibm_db.execute(stmt3)
-
-
-    products=[]
-    row = ibm_db.fetch_assoc(stmt2)
-    while(row):
-        products.append(row)
-        row = ibm_db.fetch_assoc(stmt2)
-    products=tuple(products)
-
-    locations=[]
-    row2 = ibm_db.fetch_assoc(stmt3)
-    while(row2):
-        locations.append(row2)
-        row2 = ibm_db.fetch_assoc(stmt3)
-    locations=tuple(locations)
-
-    prods = []
-    for p in products:
-        prods.append(list(p.values())[0])
-    locs = []
-    for i in locations:
-        locs.append(list(i.values())[0])
-    #app.logger.info(type(locations[0]))
-    form.from_location.choices = [(l,l) for l in locs]
-    form.from_location.choices.append(("--","--"))
-    form.to_location.choices = [(l,l) for l in locs]
-    form.to_location.choices.append(("--","--"))
-    form.product_id.choices = [(p,p) for p in prods]
-
-
-    sql2="SELECT * FROM productmovements where movement_id =?"
-    stmt2 = ibm_db.prepare(conn, sql2)    
-    ibm_db.bind_param(stmt2,1,id)
-    result=ibm_db.execute(stmt2)
-    movement=ibm_db.fetch_assoc(stmt2)
-
-    form.from_location.data = movement['from_location']
-    form.to_location.data = movement['to_location']
-    form.product_id.data = movement['product_id']
-    form.qty.data = movement['qty']
-
-    if request.method == 'POST' and form.validate():
-        from_location = request.form['from_location']
-        to_location = request.form['to_location']
-        product_id = request.form['product_id']
-        qty = int(request.form['qty'])
-
-        sql2="UPDATE productmovements SET from_location=?, to_location=?, product_id=?, qty=? WHERE movement_id=?"
-        stmt2 = ibm_db.prepare(conn, sql2)    
-        ibm_db.bind_param(stmt2,1,from_location)
-        ibm_db.bind_param(stmt2,2,to_location)
-        ibm_db.bind_param(stmt2,3,product_id)
-        ibm_db.bind_param(stmt2,4,qty)
-        ibm_db.bind_param(stmt2,5,id)
-        ibm_db.execute(stmt2)
-        if from_location == "--":
-
-            sql = "SELECT * from product_balance where location_id=? and product_id=?"
-            stmt = ibm_db.prepare(conn, sql)
-            ibm_db.bind_param(stmt2,1,to_location)
-            ibm_db.bind_param(stmt2,2,product_id)
-            result=ibm_db.execute(stmt)
-            result = ibm_db.fetch_assoc(stmt)
-
-            app.logger.info(result)
-            if result!=None:
-                if(len(result))>0:
-                    Quantity = result["qty"]
-                    q = Quantity + qty 
-
-                    sql2="UPDATE product_balance set qty=? where location_id=? and product_id=?"
-                    stmt2 = ibm_db.prepare(conn, sql2)    
-                    ibm_db.bind_param(stmt2,1,q)
-                    ibm_db.bind_param(stmt2,2,to_location)
-                    ibm_db.bind_param(stmt2,3,product_id)
-                    ibm_db.execute(stmt2)
-
-            else:
-
-                sql2="INSERT into product_balance(product_id, location_id, qty) values(?, ?, ?)"
-                stmt2 = ibm_db.prepare(conn, sql2)    
-                ibm_db.bind_param(stmt2,1,product_id)
-                ibm_db.bind_param(stmt2,2,to_location)
-                ibm_db.bind_param(stmt2,3,qty)
-                ibm_db.execute(stmt2)
-
-        elif to_location == "--":
-
-            sql = "SELECT * from product_balance where location_id=? and product_id=?"
-            stmt = ibm_db.prepare(conn, sql)
-            ibm_db.bind_param(stmt2,1,from_location)
-            ibm_db.bind_param(stmt2,2,product_id)
-            result=ibm_db.execute(stmt)
-            result = ibm_db.fetch_assoc(stmt)
-
-            app.logger.info(result)
-            if result!=None:
-                if(len(result))>0:
-                    Quantity = result["qty"]
-                    q = Quantity - qty 
-
-                    sql2="UPDATE product_balance set qty=? where location_id=? and product_id=?"
-                    stmt2 = ibm_db.prepare(conn, sql2)    
-                    ibm_db.bind_param(stmt2,1,q)
-                    ibm_db.bind_param(stmt2,2,from_location)
-                    ibm_db.bind_param(stmt2,3,product_id)
-                    ibm_db.execute(stmt2)
-
-            else:
-
-                sql2="INSERT into product_balance(product_id, location_id, qty) values(?, ?, ?)"
-                stmt2 = ibm_db.prepare(conn, sql2)    
-                ibm_db.bind_param(stmt2,1,product_id)
-                ibm_db.bind_param(stmt2,2,from_location)
-                ibm_db.bind_param(stmt2,3,qty)
-                ibm_db.execute(stmt2)
-
-        else: #will be executed if both from_location and to_location are specified
-
-            sql = "SELECT * from product_balance where location_id=? and product_id=?"
-            stmt = ibm_db.prepare(conn, sql)
-            ibm_db.bind_param(stmt2,1,to_location)
-            ibm_db.bind_param(stmt2,2,product_id)
-            result=ibm_db.execute(stmt)
-            result = ibm_db.fetch_assoc(stmt)
-
-            if result!=None:
-                if(len(result))>0:
-                    Quantity = result["qty"]
-                    q = Quantity + qty 
-
-                    sql2="UPDATE product_balance set qty=? where location_id=? and product_id=?"
-                    stmt2 = ibm_db.prepare(conn, sql2)    
-                    ibm_db.bind_param(stmt2,1,q)
-                    ibm_db.bind_param(stmt2,2,to_location)
-                    ibm_db.bind_param(stmt2,3,product_id)
-                    ibm_db.execute(stmt2)
-
-            else:
-
-                sql2="INSERT into product_balance(product_id, location_id, qty) values(?, ?, ?)"
-                stmt2 = ibm_db.prepare(conn, sql2)    
-                ibm_db.bind_param(stmt2,1,product_id)
-                ibm_db.bind_param(stmt2,2,to_location)
-                ibm_db.bind_param(stmt2,3,qty)
-                ibm_db.execute(stmt2)
-
-            sql = "SELECT * from product_balance where location_id=? and product_id=?"
-            stmt = ibm_db.prepare(conn, sql)
-            ibm_db.bind_param(stmt2,1,from_location)
-            ibm_db.bind_param(stmt2,2,product_id)
-            result=ibm_db.execute(stmt)
-            result = ibm_db.fetch_assoc(stmt)
-
-            if result!=None:
-                if(len(result))>0:
-                    Quantity = result["qty"]
-                    q = Quantity - qty 
-
-                    sql2="UPDATE product_balance set qty=? where location_id=? and product_id=?"
-                    stmt2 = ibm_db.prepare(conn, sql2)    
-                    ibm_db.bind_param(stmt2,1,q)
-                    ibm_db.bind_param(stmt2,2,from_location)
-                    ibm_db.bind_param(stmt2,3,product_id)
-                    ibm_db.execute(stmt2)
-
-            else:
-
-                sql2="INSERT into product_balance(product_id, location_id, qty) values(?, ?, ?)"
-                stmt2 = ibm_db.prepare(conn, sql2)    
-                ibm_db.bind_param(stmt2,1,product_id)
-                ibm_db.bind_param(stmt2,2,from_location)
-                ibm_db.bind_param(stmt2,3,qty)
-                ibm_db.execute(stmt2)
-
-        flash("Product Movement Updated", "success")
-
-        return redirect(url_for('product_movements'))
-
-    return render_template('edit_product_movements.html', form=form)
 
 #Delete Product Movements
 @app.route('/delete_product_movements/<string:id>', methods=['POST'])
